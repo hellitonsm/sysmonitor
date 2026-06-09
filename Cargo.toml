@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.29"
-egui_plot = "0.29"
-sysinfo = "0.33"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
