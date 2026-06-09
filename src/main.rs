@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Line, Plot, PlotPoints};
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsStr;
 use sysinfo::{Pid, Process, ProcessesToUpdate, System, Users};
 
 const MAX_HISTORY: usize = 60;
@@ -139,11 +140,16 @@ impl SysMonitor {
 
     fn update_process_list(&mut self) {
         let total_mem = self.sys.total_memory() as f32;
+        let our_pid = Pid::from_u32(std::process::id());
 
         self.processes.clear();
         self.proc_index.clear();
 
         for (pid, proc_) in self.sys.processes() {
+            // skip our own process and threads (egui creates multiple)
+            if *pid == our_pid || proc_.name() == OsStr::new("sysmonitor") {
+                continue;
+            }
             let name_raw = proc_.name().to_string_lossy();
             let name_owned = name_raw.into_owned();
             let name_lower_owned = name_owned.to_lowercase();
