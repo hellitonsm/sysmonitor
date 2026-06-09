@@ -3,9 +3,10 @@ use egui_plot::{Line, Plot, PlotPoints};
 use std::collections::{HashMap, VecDeque};
 use sysinfo::{Pid, Process, ProcessesToUpdate, System, Users};
 
-const MAX_HISTORY: usize = 120;
-const CPU_REFRESH_MS: u64 = 1000;
-const PROC_REFRESH_MS: u64 = 2000;
+const MAX_HISTORY: usize = 60;
+const CPU_REFRESH_MS: u64 = 1500;
+const PROC_REFRESH_MS: u64 = 3000;
+const MAX_TABLE_ROWS: usize = 500;
 
 #[derive(PartialEq, Clone, Copy)]
 enum SortCol {
@@ -24,7 +25,6 @@ enum Tab {
     Processes,
 }
 
-#[derive(Clone)]
 struct ProcRow {
     pid: Pid,
     user: String,
@@ -45,11 +45,16 @@ struct SysMonitor {
     filter: String,
     filter_lower: String,
     processes: Vec<ProcRow>,
+    proc_index: HashMap<Pid, usize>,
     cpu_history: VecDeque<f64>,
     mem_history: VecDeque<f64>,
+    cpu_pts_cache: Vec<[f64; 2]>,
+    mem_pts_cache: Vec<[f64; 2]>,
+    pts_dirty: bool,
     last_cpu_refresh: std::time::Instant,
     last_proc_refresh: std::time::Instant,
     need_sort: bool,
+    last_drawn_proc_count: usize,
 }
 
 impl SysMonitor {
@@ -60,6 +65,7 @@ impl SysMonitor {
         let mut app = Self {
             user_cache: build_user_cache(&users),
             processes: Vec::with_capacity(512),
+            proc_index: HashMap::with_capacity(512),
             sys,
             tab: Tab::Overview,
             sort_col: SortCol::Cpu,
@@ -68,9 +74,13 @@ impl SysMonitor {
             filter_lower: String::new(),
             cpu_history: VecDeque::with_capacity(MAX_HISTORY),
             mem_history: VecDeque::with_capacity(MAX_HISTORY),
+            cpu_pts_cache: Vec::with_capacity(MAX_HISTORY),
+            mem_pts_cache: Vec::with_capacity(MAX_HISTORY),
+            pts_dirty: true,
             last_cpu_refresh: std::time::Instant::now(),
             last_proc_refresh: std::time::Instant::now() - std::time::Duration::from_millis(PROC_REFRESH_MS),
             need_sort: false,
+            last_drawn_proc_count: 0,
         };
         app.record_history();
         app.refresh_processes();
@@ -104,20 +114,46 @@ impl SysMonitor {
         if self.mem_history.len() > MAX_HISTORY {
             self.mem_history.pop_front();
         }
+        self.pts_dirty = true;
+    }
+
+    fn rebuild_plot_points(&mut self) {
+        if !self.pts_dirty {
+            return;
+        }
+        self.cpu_pts_cache.clear();
+        self.cpu_pts_cache.extend(
+            self.cpu_history
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| [i as f64, v]),
+        );
+        self.mem_pts_cache.clear();
+        self.mem_pts_cache.extend(
+            self.mem_history
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| [i as f64, v]),
+        );
+        self.pts_dirty = false;
     }
 
     fn update_process_list(&mut self) {
         let total_mem = self.sys.total_memory() as f32;
-        self.processes.clear();
+
+        self.proc_index.clear();
 
         for (pid, proc_) in self.sys.processes() {
-            let name = proc_.name().to_string_lossy().to_string();
-            if !self.filter_lower.is_empty() {
-                if !name.to_lowercase().contains(&self.filter_lower) {
-                    continue;
-                }
+            let name_raw = proc_.name().to_string_lossy();
+            let name_owned = name_raw.into_owned();
+            let name_lower_owned = name_owned.to_lowercase();
+
+            if !self.filter_lower.is_empty()
+                && !name_lower_owned.contains(&self.filter_lower)
+            {
+                continue;
             }
-            let user = self.get_user_name_cached(proc_);
+
             let cpu = proc_.cpu_usage();
             let mem_bytes = proc_.memory();
             let mem_pct = if total_mem > 0.0 {
@@ -126,16 +162,26 @@ impl SysMonitor {
                 0.0
             };
             let status = status_str(proc_.status());
+            let user = self.get_user_name_cached(proc_);
+
             self.processes.push(ProcRow {
                 pid: *pid,
                 user,
-                name_lower: name.to_lowercase(),
-                name,
+                name: name_owned,
+                name_lower: name_lower_owned,
                 cpu,
                 mem_bytes,
                 mem_pct,
                 status,
             });
+        }
+
+        if self.processes.len() > MAX_TABLE_ROWS {
+            self.processes.truncate(MAX_TABLE_ROWS);
+        }
+
+        for (i, p) in self.processes.iter().enumerate() {
+            self.proc_index.insert(p.pid, i);
         }
 
         self.sort_processes();
@@ -169,7 +215,7 @@ impl SysMonitor {
 
     fn sort_button(ui: &mut egui::Ui, label: &str, col: SortCol, current: &mut SortCol, asc: &mut bool, need_sort: &mut bool) {
         let active = *current == col;
-        let arrow = if active { if *asc { " ▲" } else { " ▼" } } else { "" };
+        let arrow = if active { if *asc { " ^" } else { " v" } } else { "" };
         let text = format!("{}{}", label, arrow);
         if ui.selectable_label(active, &text).clicked() {
             if active {
@@ -193,14 +239,14 @@ fn build_user_cache(users: &Users) -> HashMap<sysinfo::Uid, String> {
 
 fn status_str(s: sysinfo::ProcessStatus) -> &'static str {
     match s {
-        sysinfo::ProcessStatus::Run => "Running",
+        sysinfo::ProcessStatus::Run => "Run",
         sysinfo::ProcessStatus::Sleep => "Sleep",
         sysinfo::ProcessStatus::Idle => "Idle",
         sysinfo::ProcessStatus::Zombie => "Zombie",
-        sysinfo::ProcessStatus::Stop => "Stopped",
+        sysinfo::ProcessStatus::Stop => "Stop",
         sysinfo::ProcessStatus::Dead => "Dead",
         sysinfo::ProcessStatus::Parked => "Parked",
-        _ => "Unknown",
+        _ => "?",
     }
 }
 
@@ -209,13 +255,13 @@ fn format_bytes(bytes: u64) -> String {
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
     if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
+        format!("{:.1}G", bytes as f64 / GB as f64)
     } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
+        format!("{:.1}M", bytes as f64 / MB as f64)
     } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
+        format!("{:.0}K", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{}B", bytes)
     }
 }
 
@@ -229,6 +275,8 @@ impl eframe::App for SysMonitor {
             self.refresh_processes();
         }
 
+        self.rebuild_plot_points();
+
         ctx.request_repaint_after(std::time::Duration::from_millis(CPU_REFRESH_MS));
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -239,12 +287,12 @@ impl eframe::App for SysMonitor {
                 let d = uptime / 86400;
                 let h = (uptime % 86400) / 3600;
                 let m = (uptime % 3600) / 60;
-                ui.label(format!("Uptime: {}d {}h {}m", d, h, m));
+                ui.label(format!("Up: {}d{}h{}m", d, h, m));
                 ui.separator();
                 let load = System::load_average();
-                ui.label(format!("Load: {:.2} {:.2} {:.2}", load.one, load.five, load.fifteen));
+                ui.label(format!("Load: {:.1} {:.1} {:.1}", load.one, load.five, load.fifteen));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{} processos", self.processes.len())).color(Color32::YELLOW));
+                    ui.label(RichText::new(format!("{} procs", self.processes.len())).color(Color32::YELLOW));
                 });
             });
         });
@@ -266,7 +314,7 @@ impl eframe::App for SysMonitor {
 }
 
 impl SysMonitor {
-    fn draw_overview(&self, ui: &mut egui::Ui) {
+    fn draw_overview(&mut self, ui: &mut egui::Ui) {
         let cpu_global = self.sys.global_cpu_usage();
         let total_mem = self.sys.total_memory();
         let used_mem = self.sys.used_memory();
@@ -277,21 +325,11 @@ impl SysMonitor {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading(RichText::new("CPU").color(Color32::from_rgb(100, 220, 100)));
-            ui.horizontal(|ui| {
-                ui.set_width(ui.available_width());
-                let color = if cpu_global > 90.0 {
-                    Color32::RED
-                } else if cpu_global > 60.0 {
-                    Color32::YELLOW
-                } else {
-                    Color32::GREEN
-                };
-                let bar = egui::ProgressBar::new(cpu_global / 100.0)
-                    .text(format!("Total: {:.1}%", cpu_global))
-                    .fill(color)
-                    .animate(true);
-                ui.add(bar);
-            });
+            let color = cpu_color(cpu_global);
+            let bar = egui::ProgressBar::new(cpu_global / 100.0)
+                .text(format!("Total: {:.0}%", cpu_global))
+                .fill(color);
+            ui.add(bar);
 
             ui.add_space(4.0);
 
@@ -304,17 +342,11 @@ impl SysMonitor {
                 .show(ui, |ui| {
                     for (i, cpu) in cpus.iter().enumerate() {
                         let usage = cpu.cpu_usage();
-                        let color = if usage > 90.0 {
-                            Color32::RED
-                        } else if usage > 60.0 {
-                            Color32::YELLOW
-                        } else {
-                            Color32::from_rgb(80, 200, 80)
-                        };
+                        let color = cpu_color(usage);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(format!("C{}", i)).monospace().size(10.0));
                             let bar = egui::ProgressBar::new(usage / 100.0)
-                                .desired_width(80.0)
+                                .desired_width(70.0)
                                 .fill(color)
                                 .text(format!("{:.0}%", usage));
                             ui.add(bar);
@@ -328,20 +360,14 @@ impl SysMonitor {
             ui.add_space(8.0);
 
             ui.label(RichText::new("Historico CPU (%)").strong());
-            let cpu_pts: PlotPoints = self
-                .cpu_history
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| [i as f64, v])
-                .collect();
             Plot::new("cpu_plot")
-                .height(120.0)
+                .height(100.0)
                 .view_aspect(4.0)
                 .include_y(0.0)
                 .include_y(100.0)
                 .show_x(false)
                 .show(ui, |plot_ui| {
-                    plot_ui.line(Line::new(cpu_pts).color(Color32::from_rgb(80, 220, 80)).width(2.0));
+                    plot_ui.line(Line::new(PlotPoints::from(self.cpu_pts_cache.clone())).color(Color32::from_rgb(80, 220, 80)).width(2.0));
                 });
 
             ui.separator();
@@ -352,50 +378,30 @@ impl SysMonitor {
             } else {
                 0.0
             };
-            let mcolor = if mem_pct > 90.0 {
-                Color32::RED
-            } else if mem_pct > 70.0 {
-                Color32::YELLOW
-            } else {
-                Color32::from_rgb(80, 180, 255)
-            };
+            let mcolor = mem_color(mem_pct);
             ui.add(
                 egui::ProgressBar::new((mem_pct / 100.0) as f32)
                     .text(format!(
-                        "{} / {} ({:.1}%)",
+                        "{} / {} ({:.0}%)",
                         format_bytes(used_mem),
                         format_bytes(total_mem),
                         mem_pct
                     ))
-                    .fill(mcolor)
-                    .animate(true),
+                    .fill(mcolor),
             );
 
-            egui::Grid::new("mem_details").num_columns(2).show(ui, |ui| {
-                ui.label("Disponivel:");
-                ui.label(RichText::new(format_bytes(avail_mem)).color(Color32::GREEN));
-                ui.end_row();
-                ui.label("Livre:");
-                ui.label(format_bytes(free_mem));
-                ui.end_row();
-            });
+            ui.label(format!("Disp: {}  Livre: {}", format_bytes(avail_mem), format_bytes(free_mem)));
 
             ui.add_space(4.0);
             ui.label(RichText::new("Historico Memoria (%)").strong());
-            let mem_pts: PlotPoints = self
-                .mem_history
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| [i as f64, v])
-                .collect();
             Plot::new("mem_plot")
-                .height(120.0)
+                .height(100.0)
                 .view_aspect(4.0)
                 .include_y(0.0)
                 .include_y(100.0)
                 .show_x(false)
                 .show(ui, |plot_ui| {
-                    plot_ui.line(Line::new(mem_pts).color(Color32::from_rgb(80, 180, 255)).width(2.0));
+                    plot_ui.line(Line::new(PlotPoints::from(self.mem_pts_cache.clone())).color(Color32::from_rgb(80, 180, 255)).width(2.0));
                 });
 
             if total_swap > 0 {
@@ -405,147 +411,156 @@ impl SysMonitor {
                 ui.add(
                     egui::ProgressBar::new((spct / 100.0) as f32)
                         .text(format!(
-                            "{} / {} ({:.1}%)",
+                            "{} / {}",
                             format_bytes(used_swap),
-                            format_bytes(total_swap),
-                            spct
+                            format_bytes(total_swap)
                         ))
-                        .fill(Color32::from_rgb(200, 100, 220))
-                        .animate(true),
+                        .fill(Color32::from_rgb(200, 100, 220)),
                 );
             }
 
             ui.separator();
+            ui.heading(RichText::new("Top CPU").color(Color32::YELLOW));
+            self.draw_top_list(ui, "top_cpu", 8, true);
 
-            let limit = 10;
-            let proc_slice = if self.sort_col == SortCol::Cpu && !self.sort_ascending {
-                &self.processes[0..self.processes.len().min(limit)]
-            } else {
-                &self.processes
-            };
-            let top_cpu: Vec<&ProcRow> = if self.sort_col == SortCol::Cpu && !self.sort_ascending {
-                proc_slice.iter().take(limit).collect()
+            ui.add_space(4.0);
+            ui.heading(RichText::new("Top Memoria").color(Color32::from_rgb(80, 180, 255)));
+            self.draw_top_list(ui, "top_mem", 8, false);
+        });
+    }
+
+    fn draw_top_list(&self, ui: &mut egui::Ui, id: &str, limit: usize, by_cpu: bool) {
+        let mut top: Vec<&ProcRow> = if by_cpu {
+            if self.sort_col == SortCol::Cpu && !self.sort_ascending {
+                self.processes.iter().take(limit).collect()
             } else {
                 let mut v: Vec<&ProcRow> = self.processes.iter().collect();
                 v.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap());
                 v.truncate(limit);
                 v
-            };
-
-            ui.heading(RichText::new("Top 10 - CPU").color(Color32::YELLOW));
-            egui::Grid::new("top_cpu_grid").striped(true).show(ui, |ui| {
-                ui.label(RichText::new("PID").strong());
-                ui.label(RichText::new("Nome").strong());
-                ui.label(RichText::new("CPU%").strong());
-                ui.label(RichText::new("Memoria").strong());
-                ui.end_row();
-                for p in &top_cpu {
-                    ui.label(p.pid.to_string());
-                    ui.label(&p.name);
-                    let c = if p.cpu > 80.0 { Color32::RED } else if p.cpu > 40.0 { Color32::YELLOW } else { Color32::WHITE };
-                    ui.label(RichText::new(format!("{:.1}%", p.cpu)).color(c));
-                    ui.label(format_bytes(p.mem_bytes));
-                    ui.end_row();
-                }
-            });
-
-            ui.add_space(8.0);
-
-            let top_mem: Vec<&ProcRow> = if self.sort_col == SortCol::MemBytes && !self.sort_ascending {
-                self.processes.iter().take(limit).collect()
-            } else if self.sort_col == SortCol::MemPct && !self.sort_ascending {
+            }
+        } else {
+            if (self.sort_col == SortCol::MemBytes || self.sort_col == SortCol::MemPct)
+                && !self.sort_ascending
+            {
                 self.processes.iter().take(limit).collect()
             } else {
                 let mut v: Vec<&ProcRow> = self.processes.iter().collect();
                 v.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
                 v.truncate(limit);
                 v
-            };
+            }
+        };
 
-            ui.heading(RichText::new("Top 10 - Memoria").color(Color32::from_rgb(80, 180, 255)));
-            egui::Grid::new("top_mem_grid").striped(true).show(ui, |ui| {
-                ui.label(RichText::new("PID").strong());
-                ui.label(RichText::new("Nome").strong());
-                ui.label(RichText::new("Memoria").strong());
-                ui.label(RichText::new("MEM%").strong());
-                ui.end_row();
-                for p in &top_mem {
-                    ui.label(p.pid.to_string());
-                    ui.label(&p.name);
-                    ui.label(RichText::new(format_bytes(p.mem_bytes)).color(Color32::from_rgb(80, 180, 255)));
+        if by_cpu {
+            top.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap());
+            top.truncate(limit);
+        } else {
+            top.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+            top.truncate(limit);
+        }
+
+        egui::Grid::new(id).striped(true).num_columns(4).show(ui, |ui| {
+            ui.label(RichText::new("PID").strong());
+            ui.label(RichText::new("Nome").strong());
+            ui.label(RichText::new(if by_cpu { "CPU%" } else { "MEM" }).strong());
+            ui.label(RichText::new(if by_cpu { "MEM" } else { "MEM%" }).strong());
+            ui.end_row();
+            for p in &top {
+                ui.label(p.pid.to_string());
+                ui.label(&p.name);
+                if by_cpu {
+                    let c = if p.cpu > 80.0 { Color32::RED } else if p.cpu > 40.0 { Color32::YELLOW } else { Color32::WHITE };
+                    ui.label(RichText::new(format!("{:.1}", p.cpu)).color(c));
+                    ui.label(format_bytes(p.mem_bytes));
+                } else {
+                    ui.label(format_bytes(p.mem_bytes));
                     ui.label(format!("{:.1}%", p.mem_pct));
-                    ui.end_row();
                 }
-            });
+                ui.end_row();
+            }
         });
     }
 
     fn draw_processes(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Filtrar:");
+            ui.label("Filtro:");
             let resp = ui.text_edit_singleline(&mut self.filter);
             if resp.changed() {
                 self.filter_lower = self.filter.to_lowercase();
-                self.update_process_list();
+                self.refresh_processes();
             }
             if ui.button("Limpar").clicked() {
                 self.filter.clear();
                 self.filter_lower.clear();
-                self.update_process_list();
+                self.refresh_processes();
             }
             ui.separator();
-            ui.label(RichText::new(format!("{} processos", self.processes.len())).color(Color32::YELLOW));
+            ui.label(RichText::new(format!("{} / {}", self.processes.len(), MAX_TABLE_ROWS)).color(Color32::YELLOW));
         });
 
         ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("proc_table")
-                .striped(true)
-                .num_columns(8)
-                .min_col_width(40.0)
-                .show(ui, |ui| {
-                    Self::sort_button(ui, "PID", SortCol::Pid, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    Self::sort_button(ui, "Usuario", SortCol::User, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    Self::sort_button(ui, "Nome", SortCol::Name, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    Self::sort_button(ui, "CPU%", SortCol::Cpu, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    Self::sort_button(ui, "Memoria", SortCol::MemBytes, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    Self::sort_button(ui, "MEM%", SortCol::MemPct, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    Self::sort_button(ui, "Status", SortCol::Status, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
-                    ui.label(RichText::new("Acao").strong());
-                    ui.end_row();
+        let mut pids_to_kill: Vec<Pid> = Vec::new();
 
-                    let mut pids_to_kill: Vec<Pid> = Vec::new();
-
-                    for p in &self.processes {
-                        ui.label(p.pid.to_string());
-                        ui.label(&p.user);
-                        ui.label(&p.name);
-                        let cc = if p.cpu > 80.0 { Color32::RED } else if p.cpu > 40.0 { Color32::YELLOW } else { Color32::WHITE };
-                        ui.label(RichText::new(format!("{:.1}", p.cpu)).color(cc));
-                        ui.label(format_bytes(p.mem_bytes));
-                        let mc = if p.mem_pct > 50.0 { Color32::RED } else if p.mem_pct > 20.0 { Color32::YELLOW } else { Color32::WHITE };
-                        ui.label(RichText::new(format!("{:.1}%", p.mem_pct)).color(mc));
-                        ui.label(p.status);
-                        if ui.button("X").on_hover_text("Matar processo").clicked() {
-                            pids_to_kill.push(p.pid);
-                        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("proc_table")
+                    .striped(true)
+                    .num_columns(8)
+                    .min_col_width(40.0)
+                    .show(ui, |ui| {
+                        Self::sort_button(ui, "PID", SortCol::Pid, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        Self::sort_button(ui, "User", SortCol::User, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        Self::sort_button(ui, "Nome", SortCol::Name, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        Self::sort_button(ui, "CPU%", SortCol::Cpu, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        Self::sort_button(ui, "MEM", SortCol::MemBytes, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        Self::sort_button(ui, "MEM%", SortCol::MemPct, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        Self::sort_button(ui, "Status", SortCol::Status, &mut self.sort_col, &mut self.sort_ascending, &mut self.need_sort);
+                        ui.label(RichText::new("X").strong());
                         ui.end_row();
-                    }
 
-                    for pid in pids_to_kill {
-                        if let Some(proc_) = self.sys.process(pid) {
-                            proc_.kill();
+                        let total = self.processes.len();
+                        let drawn = self.last_drawn_proc_count.min(total);
+
+                        for p in self.processes.iter().take(drawn) {
+                            ui.label(p.pid.to_string());
+                            ui.label(&p.user);
+                            ui.label(&p.name);
+                            let cc = if p.cpu > 80.0 { Color32::RED } else if p.cpu > 40.0 { Color32::YELLOW } else { Color32::WHITE };
+                            ui.label(RichText::new(format!("{:.1}", p.cpu)).color(cc));
+                            ui.label(format_bytes(p.mem_bytes));
+                            let mc = if p.mem_pct > 50.0 { Color32::RED } else if p.mem_pct > 20.0 { Color32::YELLOW } else { Color32::WHITE };
+                            ui.label(RichText::new(format!("{:.1}%", p.mem_pct)).color(mc));
+                            ui.label(p.status);
+                            if ui.button("X").on_hover_text("Matar").clicked() {
+                                pids_to_kill.push(p.pid);
+                            }
+                            ui.end_row();
                         }
-                    }
-                });
-        });
+                    });
+            });
+
+        for pid in pids_to_kill {
+            if let Some(proc_) = self.sys.process(pid) {
+                proc_.kill();
+            }
+        }
 
         if self.need_sort {
             self.sort_processes();
             self.need_sort = false;
         }
     }
+}
+
+fn cpu_color(v: f32) -> Color32 {
+    if v > 90.0 { Color32::RED } else if v > 60.0 { Color32::YELLOW } else { Color32::from_rgb(80, 200, 80) }
+}
+
+fn mem_color(v: f64) -> Color32 {
+    if v > 90.0 { Color32::RED } else if v > 70.0 { Color32::YELLOW } else { Color32::from_rgb(80, 180, 255) }
 }
 
 fn main() -> eframe::Result<()> {
