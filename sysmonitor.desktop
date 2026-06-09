@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=SysMonitor
+Name[pt_BR]=Monitor do Sistema
+Comment=System resource monitor
+Comment[pt_BR]=Monitor de recursos do sistema
+Exec=/home/helliton/Documentos/sysmonitor/target/release/sysmonitor
+Icon=/home/helliton/Documentos/sysmonitor/assets/sysmonitor.png
+Terminal=false
+Type=Application
+Categories=System;Monitor;
+Keywords=system;monitor;cpu;memory;process;
+StartupNotify=true

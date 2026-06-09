@@ -1,0 +1,9 @@
+[package]
+name = "sysmonitor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.29"
+egui_plot = "0.29"
+sysinfo = "0.33"
