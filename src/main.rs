@@ -54,7 +54,7 @@ struct SysMonitor {
     last_cpu_refresh: std::time::Instant,
     last_proc_refresh: std::time::Instant,
     need_sort: bool,
-    last_drawn_proc_count: usize,
+
 }
 
 impl SysMonitor {
@@ -80,7 +80,6 @@ impl SysMonitor {
             last_cpu_refresh: std::time::Instant::now(),
             last_proc_refresh: std::time::Instant::now() - std::time::Duration::from_millis(PROC_REFRESH_MS),
             need_sort: false,
-            last_drawn_proc_count: 0,
         };
         app.record_history();
         app.refresh_processes();
@@ -141,6 +140,7 @@ impl SysMonitor {
     fn update_process_list(&mut self) {
         let total_mem = self.sys.total_memory() as f32;
 
+        self.processes.clear();
         self.proc_index.clear();
 
         for (pid, proc_) in self.sys.processes() {
@@ -521,10 +521,7 @@ impl SysMonitor {
                         ui.label(RichText::new("X").strong());
                         ui.end_row();
 
-                        let total = self.processes.len();
-                        let drawn = self.last_drawn_proc_count.min(total);
-
-                        for p in self.processes.iter().take(drawn) {
+                        for p in self.processes.iter() {
                             ui.label(p.pid.to_string());
                             ui.label(&p.user);
                             ui.label(&p.name);
