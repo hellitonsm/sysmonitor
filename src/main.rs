@@ -1,12 +1,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::{
-    egui::{self, Color32, RichText, Stroke, Ui},
+    egui::{self, Color32, RichText, Rounding, Stroke, Ui, Vec2},
     App,
 };
 use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
+
+const BG: Color32 = Color32::from_rgb(15, 15, 25);
+const SURFACE: Color32 = Color32::from_rgb(22, 22, 35);
+const ROW_EVEN: Color32 = Color32::from_rgb(20, 20, 33);
+const ROW_ODD: Color32 = Color32::from_rgb(26, 26, 42);
+const ACCENT: Color32 = Color32::from_rgb(80, 140, 255);
+const ACCENT_DIM: Color32 = Color32::from_rgb(50, 100, 200);
+const TEXT: Color32 = Color32::from_rgb(220, 220, 230);
+const TEXT_DIM: Color32 = Color32::from_rgb(140, 140, 165);
+
 
 struct ProcInfo {
     pid: u32,
@@ -215,6 +225,10 @@ impl ProcMonitorApp {
 
         v
     }
+
+    fn ram_used_kb(&self) -> u64 {
+        self.procs.iter().map(|p| p.rss_kb).sum()
+    }
 }
 
 fn cpu_pct(p: &ProcInfo, prev: &HashMap<u32, (u64, u64)>, delta: f64) -> f64 {
@@ -241,8 +255,8 @@ fn fmt_ram(kb: u64) -> String {
 fn state_label(c: char) -> &'static str {
     match c {
         'R' => "Running",
-        'S' => "Sleeping",
-        'D' => "Disk Sleep",
+        'S' => "Sleep",
+        'D' => "Disk I/O",
         'Z' => "Zombie",
         'T' => "Stopped",
         'I' => "Idle",
@@ -252,30 +266,64 @@ fn state_label(c: char) -> &'static str {
 
 fn state_color(c: char) -> Color32 {
     match c {
-        'R' => Color32::GREEN,
-        'S' => Color32::from_rgb(100, 180, 255),
-        'D' => Color32::from_rgb(200, 200, 100),
-        'Z' => Color32::RED,
-        'T' => Color32::from_rgb(200, 150, 255),
-        'I' => Color32::GRAY,
-        _ => Color32::DARK_GRAY,
+        'R' => Color32::from_rgb(80, 230, 130),
+        'S' => Color32::from_rgb(100, 160, 255),
+        'D' => Color32::from_rgb(230, 200, 80),
+        'Z' => Color32::from_rgb(255, 80, 80),
+        'T' => Color32::from_rgb(190, 140, 255),
+        'I' => Color32::from_rgb(120, 120, 140),
+        _ => Color32::from_rgb(90, 90, 110),
+    }
+}
+
+fn state_dot(c: char) -> &'static str {
+    match c {
+        'R' => "\u{25CF}",
+        'S' => "\u{25CF}",
+        'D' => "\u{25CF}",
+        'Z' => "\u{25CF}",
+        'T' => "\u{25CF}",
+        'I' => "\u{25CB}",
+        _ => "\u{25CB}",
     }
 }
 
 fn cpu_color(pct: f64, ncpu: usize) -> Color32 {
     let max = (ncpu as f64 * 100.0).max(1.0);
     let r = (pct / max).min(1.0);
-    if r < 0.33 {
-        Color32::GREEN
-    } else if r < 0.66 {
-        Color32::YELLOW
+    if r < 0.15 {
+        Color32::from_rgb(100, 200, 130)
+    } else if r < 0.4 {
+        Color32::from_rgb(160, 220, 100)
+    } else if r < 0.65 {
+        Color32::from_rgb(240, 200, 60)
+    } else if r < 0.85 {
+        Color32::from_rgb(255, 140, 50)
     } else {
-        Color32::RED
+        Color32::from_rgb(255, 70, 70)
     }
 }
 
-fn hdr(s: &str) -> RichText {
-    RichText::new(s).size(11.0).color(Color32::from_rgb(160, 160, 190)).strong()
+fn ram_bar_color(pct: f64) -> Color32 {
+    if pct < 50.0 {
+        Color32::from_rgb(60, 180, 255)
+    } else if pct < 75.0 {
+        Color32::from_rgb(240, 200, 60)
+    } else {
+        Color32::from_rgb(255, 80, 80)
+    }
+}
+
+fn pill_button(label: &str, active: bool) -> egui::Button<'_> {
+    let (bg, fg) = if active {
+        (ACCENT, Color32::WHITE)
+    } else {
+        (Color32::from_rgb(35, 35, 52), TEXT_DIM)
+    };
+    egui::Button::new(RichText::new(label).size(11.0).color(fg))
+        .fill(bg)
+        .stroke(Stroke::NONE)
+        .rounding(Rounding::same(4.0))
 }
 
 impl App for ProcMonitorApp {
@@ -284,15 +332,17 @@ impl App for ProcMonitorApp {
             self.refresh();
             ctx.request_repaint();
         } else {
-            ctx.request_repaint_after(Duration::from_millis(250));
+            ctx.request_repaint_after(Duration::from_millis(200));
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::from_rgb(18, 18, 28)))
+            .frame(egui::Frame::none().fill(BG).inner_margin(8.0))
             .show(ctx, |ui| {
                 self.ui_header(ui);
-                ui.add_space(4.0);
+                ui.add_space(6.0);
                 self.ui_toolbar(ui);
+                ui.add_space(6.0);
+                self.ui_ram_bar(ui);
                 ui.add_space(4.0);
                 self.ui_table(ui);
                 ui.add_space(2.0);
@@ -303,176 +353,273 @@ impl App for ProcMonitorApp {
 
 impl ProcMonitorApp {
     fn ui_header(&self, ui: &mut Ui) {
-        ui.heading(RichText::new("SysMonitor").size(17.0).color(Color32::WHITE));
+        egui::Frame::none()
+            .fill(SURFACE)
+            .rounding(Rounding::same(6.0))
+            .inner_margin(egui::Margin::same(10.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("\u{2699}").size(20.0).color(ACCENT));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("SysMonitor").size(18.0).color(Color32::WHITE).strong());
+                    ui.add_space(2.0);
+                    ui.label(RichText::new("Linux").size(12.0).color(TEXT_DIM));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ram_used = self.ram_used_kb();
+                        let pct = if self.total_ram_kb > 0 {
+                            ram_used as f64 / self.total_ram_kb as f64 * 100.0
+                        } else {
+                            0.0
+                        };
+                        ui.label(
+                            RichText::new(format!("CPU Cores: {}", self.num_cpus))
+                                .size(11.0)
+                                .color(TEXT_DIM),
+                        );
+                        ui.add_space(12.0);
+                        ui.label(
+                            RichText::new(format!("{} / {} ({:.0}%)", fmt_ram(ram_used), fmt_ram(self.total_ram_kb), pct))
+                                .size(11.0)
+                                .color(Color32::from_rgb(160, 210, 255)),
+                        );
+                    });
+                });
+            });
     }
 
     fn ui_toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("🔍").size(15.0));
-            ui.add_sized(
-                [200.0, 22.0],
-                egui::TextEdit::singleline(&mut self.search).hint_text("Buscar..."),
-            );
-
-            ui.separator();
-
-            ui.label(RichText::new("Atualização:").color(Color32::GRAY).size(12.0));
-            for (lbl, ms) in [("0.5s", 500u64), ("1s", 1000), ("2s", 2000), ("5s", 5000)] {
-                let sel = self.interval == Duration::from_millis(ms);
-                let btn = egui::Button::new(RichText::new(lbl).size(11.0))
-                    .fill(if sel {
-                        Color32::from_rgb(50, 110, 200)
-                    } else {
-                        Color32::from_rgb(40, 40, 55)
-                    })
-                    .stroke(Stroke::NONE);
-                if ui.add(btn).clicked() {
-                    self.interval = Duration::from_millis(ms);
-                }
-            }
-
-            ui.separator();
-
-            ui.label(RichText::new("Ordenar:").color(Color32::GRAY).size(12.0));
-            for (lbl, col) in [
-                ("PID", SortCol::Pid),
-                ("Nome", SortCol::Name),
-                ("RAM", SortCol::Ram),
-                ("CPU", SortCol::Cpu),
-                ("VMSIZE", SortCol::VmSize),
-                ("Estado", SortCol::State),
-            ] {
-                let act = self.sort_col == col;
-                let arrow = if act {
-                    if self.sort_asc { " ▲" } else { " ▼" }
-                } else {
-                    ""
-                };
-                let btn = egui::Button::new(
-                    RichText::new(format!("{}{}", lbl, arrow))
-                        .size(11.0)
-                        .color(if act { Color32::WHITE } else { Color32::GRAY }),
-                )
-                .fill(if act {
-                    Color32::from_rgb(50, 110, 200)
-                } else {
-                    Color32::from_rgb(35, 35, 50)
-                })
-                .stroke(Stroke::NONE);
-                if ui.add(btn).clicked() {
-                    if self.sort_col == col {
-                        self.sort_asc = !self.sort_asc;
-                    } else {
-                        self.sort_col = col;
-                        self.sort_asc = matches!(col, SortCol::Pid | SortCol::Name);
+        egui::Frame::none()
+            .fill(SURFACE)
+            .rounding(Rounding::same(6.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("\u{1F50D}").size(14.0));
+                    let search_resp = ui.add_sized(
+                        [180.0, 22.0],
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text(RichText::new("Buscar processo...").color(Color32::from_rgb(80, 80, 100)))
+                            .text_color(TEXT),
+                    );
+                    if search_resp.changed() {
+                        self.search = self.search.trim().to_string();
                     }
-                }
-            }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let ram_used: u64 = self.procs.iter().map(|p| p.rss_kb).sum();
-                let pct = if self.total_ram_kb > 0 {
-                    ram_used as f64 / self.total_ram_kb as f64 * 100.0
-                } else {
-                    0.0
-                };
-                ui.label(
-                    RichText::new(format!(
-                        "{} / {} ({:.0}%)",
-                        fmt_ram(ram_used),
-                        fmt_ram(self.total_ram_kb),
-                        pct
-                    ))
-                    .size(12.0)
-                    .color(Color32::from_rgb(180, 220, 255)),
-                );
+                    ui.add_space(8.0);
+
+                    ui.label(RichText::new("Intervalo:").color(TEXT_DIM).size(11.0));
+                    for (lbl, ms) in [("0.5s", 500u64), ("1s", 1000), ("2s", 2000), ("5s", 5000)] {
+                        let sel = self.interval == Duration::from_millis(ms);
+                        if ui.add(pill_button(lbl, sel)).clicked() {
+                            self.interval = Duration::from_millis(ms);
+                        }
+                    }
+
+                    ui.add_space(8.0);
+
+                    ui.label(RichText::new("Ordenar:").color(TEXT_DIM).size(11.0));
+                    for (lbl, col) in [
+                        ("PID", SortCol::Pid),
+                        ("Nome", SortCol::Name),
+                        ("RAM", SortCol::Ram),
+                        ("CPU", SortCol::Cpu),
+                        ("VMSIZE", SortCol::VmSize),
+                        ("Estado", SortCol::State),
+                    ] {
+                        let act = self.sort_col == col;
+                        let arrow = if act {
+                            if self.sort_asc { " \u{25B2}" } else { " \u{25BC}" }
+                        } else {
+                            ""
+                        };
+                        let text = format!("{}{}", lbl, arrow);
+                        if ui.add(pill_button(&text, act)).clicked() {
+                            if self.sort_col == col {
+                                self.sort_asc = !self.sort_asc;
+                            } else {
+                                self.sort_col = col;
+                                self.sort_asc = matches!(col, SortCol::Pid | SortCol::Name);
+                            }
+                        }
+                    }
+                });
             });
-        });
+    }
+
+    fn ui_ram_bar(&self, ui: &mut Ui) {
+        let ram_used = self.ram_used_kb();
+        let pct = if self.total_ram_kb > 0 {
+            ram_used as f64 / self.total_ram_kb as f64
+        } else {
+            0.0
+        };
+
+        egui::Frame::none()
+            .fill(SURFACE)
+            .rounding(Rounding::same(4.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("RAM").size(10.0).color(TEXT_DIM).strong());
+                    let bar_w = ui.available_width() - 200.0;
+                    let bar_h = 14.0;
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(bar_w, bar_h), egui::Sense::hover());
+                    if ui.is_rect_visible(rect) {
+                        ui.painter().rect_filled(rect, Rounding::same(3.0), Color32::from_rgb(30, 30, 48));
+                        if pct > 0.0 {
+                            let fill_w = rect.width() * pct.min(1.0) as f32;
+                            let fill_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + fill_w, rect.max.y));
+                            ui.painter().rect_filled(fill_rect, Rounding::same(3.0), ram_bar_color(pct * 100.0));
+                        }
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            format!("{:.0}%  {} / {}", pct * 100.0, fmt_ram(ram_used), fmt_ram(self.total_ram_kb)),
+                            egui::FontId::proportional(10.0),
+                            Color32::WHITE,
+                        );
+                    }
+                    ui.advance_cursor_after_rect(rect);
+                    ui.advance_cursor_after_rect(resp.rect);
+                    _ = resp;
+                });
+            });
     }
 
     fn ui_table(&mut self, ui: &mut Ui) {
         let sorted = self.sorted();
+        let row_h = 22.0;
+        let cols: [f32; 7] = [62.0, -1.0, 90.0, 90.0, 90.0, 72.0, 62.0];
 
-        ui.horizontal(|ui| {
-            ui.set_min_width(ui.available_width());
-            self.header_row(ui);
-        });
-        ui.separator();
+        egui::Frame::none()
+            .fill(SURFACE)
+            .rounding(Rounding::same(6.0))
+            .inner_margin(egui::Margin::same(4.0))
+            .show(ui, |ui| {
+                // header
+                ui.horizontal(|ui| {
+                    ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(160, 170, 210));
+                    let widths = cols;
+                    ui.add_sized([widths[0], row_h], |ui: &mut Ui| ui.label(RichText::new("PID").size(10.0).strong()));
+                    ui.add_sized([widths[1].max(ui.available_width() * 0.01), row_h], |ui: &mut Ui| ui.label(RichText::new("NOME").size(10.0).strong()));
+                    ui.add_sized([widths[2], row_h], |ui: &mut Ui| ui.label(RichText::new("ESTADO").size(10.0).strong()));
+                    ui.add_sized([widths[3], row_h], |ui: &mut Ui| ui.label(RichText::new("RAM").size(10.0).strong()));
+                    ui.add_sized([widths[4], row_h], |ui: &mut Ui| ui.label(RichText::new("VMSIZE").size(10.0).strong()));
+                    ui.add_sized([widths[5], row_h], |ui: &mut Ui| ui.label(RichText::new("CPU%").size(10.0).strong()));
+                    ui.label(RichText::new("").size(10.0));
+                });
 
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .show_rows(ui, 20.0, sorted.len(), |ui, range| {
-                for i in range {
-                    let p = sorted[i];
-                    let cpu = self.cpu_vals.get(&p.pid).copied().unwrap_or(0.0);
+                ui.add_space(1.0);
+                let line_rect = ui.available_rect_before_wrap();
+                ui.painter().line_segment(
+                    [line_rect.left_top(), line_rect.right_top()],
+                    Stroke::new(1.0, Color32::from_rgb(50, 50, 75)),
+                );
+                ui.add_space(2.0);
 
-                    ui.horizontal(|ui| {
-                        ui.set_min_width(ui.available_width());
-                        self.data_row(ui, p, cpu);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show_rows(ui, row_h, sorted.len(), |ui, range| {
+                        for i in range {
+                            let p = sorted[i];
+                            let cpu = self.cpu_vals.get(&p.pid).copied().unwrap_or(0.0);
+                            let bg = if i % 2 == 0 { ROW_EVEN } else { ROW_ODD };
+
+                            egui::Frame::none()
+                                .fill(bg)
+                                .rounding(Rounding::same(2.0))
+                                .inner_margin(egui::Margin::symmetric(2.0, 1.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized([cols[0], row_h - 4.0], |ui: &mut Ui| {
+                                            ui.label(RichText::new(format!("{}", p.pid)).size(11.0).monospace().color(TEXT_DIM))
+                                        });
+                                        ui.add_sized([ui.available_width() * 0.35, row_h - 4.0], |ui: &mut Ui| {
+                                            ui.label(RichText::new(truncate_name(&p.name, 30)).size(11.0).color(TEXT))
+                                        });
+                                        ui.add_sized([cols[2], row_h - 4.0], |ui: &mut Ui| {
+                                            ui.label(RichText::new(format!("{} {}", state_dot(p.state), state_label(p.state))).size(10.0).color(state_color(p.state)))
+                                        });
+                                        ui.add_sized([cols[3], row_h - 4.0], |ui: &mut Ui| {
+                                            ui.label(RichText::new(fmt_ram(p.rss_kb)).size(11.0).color(Color32::from_rgb(200, 215, 240)))
+                                        });
+                                        ui.add_sized([cols[4], row_h - 4.0], |ui: &mut Ui| {
+                                            ui.label(RichText::new(fmt_ram(p.vmsize_kb)).size(10.0).color(TEXT_DIM))
+                                        });
+                                        ui.add_sized([cols[5], row_h - 4.0], |ui: &mut Ui| {
+                                            let cc = cpu_color(cpu, self.num_cpus);
+                                            let txt = if cpu >= 10.0 {
+                                                RichText::new(format!("{:.1}%", cpu)).size(11.0).color(cc).strong()
+                                            } else {
+                                                RichText::new(format!("{:.1}%", cpu)).size(11.0).color(cc)
+                                            };
+                                            ui.label(txt)
+                                        });
+                                    });
+                                });
+                        }
                     });
-
-                    if i < sorted.len() - 1 {
-                        ui.separator();
-                    }
-                }
             });
-    }
-
-    fn header_row(&self, ui: &mut Ui) {
-        ui.set_min_width(55.0);
-        ui.label(hdr("PID"));
-        ui.set_min_width(200.0);
-        ui.label(hdr("Nome"));
-        ui.set_min_width(90.0);
-        ui.label(hdr("Estado"));
-        ui.set_min_width(95.0);
-        ui.label(hdr("RAM"));
-        ui.set_min_width(100.0);
-        ui.label(hdr("VMSIZE"));
-        ui.set_min_width(75.0);
-        ui.label(hdr("CPU%"));
-    }
-
-    fn data_row(&self, ui: &mut Ui, p: &ProcInfo, cpu: f64) {
-        ui.set_min_width(55.0);
-        ui.label(RichText::new(format!("{}", p.pid)).size(11.0).color(Color32::GRAY));
-        ui.set_min_width(200.0);
-        ui.label(RichText::new(&p.name).size(11.0).color(Color32::WHITE));
-        ui.set_min_width(90.0);
-        ui.label(RichText::new(state_label(p.state)).size(10.0).color(state_color(p.state)));
-        ui.set_min_width(95.0);
-        ui.label(RichText::new(fmt_ram(p.rss_kb)).size(11.0).color(Color32::from_rgb(210, 210, 210)));
-        ui.set_min_width(100.0);
-        ui.label(RichText::new(fmt_ram(p.vmsize_kb)).size(10.0).color(Color32::GRAY));
-        ui.set_min_width(75.0);
-        ui.label(
-            RichText::new(format!("{:.1}%", cpu))
-                .size(11.0)
-                .color(cpu_color(cpu, self.num_cpus)),
-        );
     }
 
     fn ui_footer(&self, ui: &mut Ui) {
         let elapsed = self.last_update.elapsed().as_millis();
-        ui.label(
-            RichText::new(format!(
-                "Processos: {}  |  CPUs: {}  |  Última atualização: {}ms atrás",
-                self.procs.len(),
-                self.num_cpus,
-                elapsed
-            ))
-            .size(10.0)
-            .color(Color32::GRAY),
-        );
+        let secs = elapsed / 1000;
+        let ms = elapsed % 1000;
+
+        egui::Frame::none()
+            .fill(SURFACE)
+            .rounding(Rounding::same(4.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("\u{2234} {} processos", self.procs.len()))
+                            .size(10.0)
+                            .color(TEXT_DIM),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("CPUs: {}", self.num_cpus))
+                            .size(10.0)
+                            .color(TEXT_DIM),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(if secs > 0 {
+                            format!("Atualizado {}s {}ms atr\u{00E1}s", secs, ms)
+                        } else {
+                            format!("Atualizado {}ms atr\u{00E1}s", ms)
+                        })
+                        .size(10.0)
+                        .color(TEXT_DIM),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("Intervalo: {}ms", self.interval.as_millis()))
+                                .size(10.0)
+                                .color(TEXT_DIM),
+                        );
+                    });
+                });
+            });
+    }
+}
+
+fn truncate_name(name: &str, max: usize) -> String {
+    if name.len() <= max {
+        name.to_string()
+    } else {
+        format!("{}...", &name[..max - 3])
     }
 }
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 600.0])
-            .with_min_inner_size([650.0, 380.0])
-            .with_title("SysMonitor — Linux"),
+            .with_inner_size([960.0, 640.0])
+            .with_min_inner_size([680.0, 400.0])
+            .with_title("SysMonitor"),
         ..Default::default()
     };
 
@@ -480,7 +627,19 @@ fn main() -> eframe::Result<()> {
         "SysMonitor",
         options,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            let mut visuals = egui::Visuals::dark();
+            visuals.window_rounding = Rounding::same(8.0);
+            visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(22, 22, 35);
+            visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+            visuals.widgets.inactive.bg_fill = Color32::from_rgb(30, 30, 48);
+            visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+            visuals.widgets.hovered.bg_fill = Color32::from_rgb(45, 45, 65);
+            visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+            visuals.widgets.active.bg_fill = ACCENT_DIM;
+            visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+            visuals.selection.bg_fill = ACCENT_DIM;
+            visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+            cc.egui_ctx.set_visuals(visuals);
             Ok(Box::new(ProcMonitorApp::new(cc)))
         }),
     )
