@@ -489,24 +489,29 @@ impl ProcMonitorApp {
     fn ui_table(&mut self, ui: &mut Ui) {
         let sorted = self.sorted();
         let row_h = 22.0;
-        let cols: [f32; 7] = [62.0, -1.0, 90.0, 90.0, 90.0, 72.0, 62.0];
+        let kill_w = 22.0;
+        let pid_w = 58.0;
+        let state_w = 90.0;
+        let ram_w = 90.0;
+        let vmsize_w = 90.0;
+        let cpu_w = 72.0;
 
         egui::Frame::none()
             .fill(SURFACE)
             .rounding(Rounding::same(6.0))
             .inner_margin(egui::Margin::same(4.0))
             .show(ui, |ui| {
-                // header
+                let name_w = ((ui.available_width() - kill_w - pid_w - state_w - ram_w - vmsize_w - cpu_w) / 2.0).max(60.0);
+
                 ui.horizontal(|ui| {
                     ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(160, 170, 210));
-                    let widths = cols;
-                    ui.add_sized([widths[0], row_h], |ui: &mut Ui| ui.label(RichText::new("PID").size(10.0).strong()));
-                    ui.add_sized([widths[1].max(ui.available_width() * 0.01), row_h], |ui: &mut Ui| ui.label(RichText::new("NOME").size(10.0).strong()));
-                    ui.add_sized([widths[2], row_h], |ui: &mut Ui| ui.label(RichText::new("ESTADO").size(10.0).strong()));
-                    ui.add_sized([widths[3], row_h], |ui: &mut Ui| ui.label(RichText::new("RAM").size(10.0).strong()));
-                    ui.add_sized([widths[4], row_h], |ui: &mut Ui| ui.label(RichText::new("VMSIZE").size(10.0).strong()));
-                    ui.add_sized([widths[5], row_h], |ui: &mut Ui| ui.label(RichText::new("CPU%").size(10.0).strong()));
-                    ui.label(RichText::new("").size(10.0));
+                    ui.add_sized([kill_w, row_h], egui::Label::new(RichText::new("").size(10.0)));
+                    ui.add_sized([pid_w, row_h], |ui: &mut Ui| ui.label(RichText::new("PID").size(10.0).strong()));
+                    ui.add_sized([name_w, row_h], |ui: &mut Ui| ui.label(RichText::new("NOME").size(10.0).strong()));
+                    ui.add_sized([state_w, row_h], |ui: &mut Ui| ui.label(RichText::new("ESTADO").size(10.0).strong()));
+                    ui.add_sized([ram_w, row_h], |ui: &mut Ui| ui.label(RichText::new("RAM").size(10.0).strong()));
+                    ui.add_sized([vmsize_w, row_h], |ui: &mut Ui| ui.label(RichText::new("VMSIZE").size(10.0).strong()));
+                    ui.add_sized([cpu_w, row_h], |ui: &mut Ui| ui.label(RichText::new("CPU%").size(10.0).strong()));
                 });
 
                 ui.add_space(1.0);
@@ -518,7 +523,7 @@ impl ProcMonitorApp {
                 ui.add_space(2.0);
 
                 egui::ScrollArea::vertical()
-                    .auto_shrink([false, true])
+                    .auto_shrink([false; 2])
                     .show_rows(ui, row_h, sorted.len(), |ui, range| {
                         for i in range {
                             let p = sorted[i];
@@ -528,25 +533,34 @@ impl ProcMonitorApp {
                             egui::Frame::none()
                                 .fill(bg)
                                 .rounding(Rounding::same(2.0))
-                                .inner_margin(egui::Margin::symmetric(2.0, 1.0))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.add_sized([cols[0], row_h - 4.0], |ui: &mut Ui| {
+                                        if ui.add_sized([kill_w, row_h - 4.0], |ui: &mut Ui| {
+                                            ui.add(
+                                                egui::Button::new(RichText::new("\u{2716}").size(9.0).color(TEXT_DIM))
+                                                    .fill(Color32::TRANSPARENT)
+                                                    .stroke(Stroke::NONE)
+                                                    .rounding(Rounding::same(2.0)),
+                                            )
+                                        }).clicked() {
+                                            _ = std::process::Command::new("kill").arg(p.pid.to_string()).spawn();
+                                        }
+                                        ui.add_sized([pid_w, row_h - 4.0], |ui: &mut Ui| {
                                             ui.label(RichText::new(format!("{}", p.pid)).size(11.0).monospace().color(TEXT_DIM))
                                         });
-                                        ui.add_sized([ui.available_width() * 0.35, row_h - 4.0], |ui: &mut Ui| {
+                                        ui.add_sized([name_w, row_h - 4.0], |ui: &mut Ui| {
                                             ui.label(RichText::new(truncate_name(&p.name, 30)).size(11.0).color(TEXT))
                                         });
-                                        ui.add_sized([cols[2], row_h - 4.0], |ui: &mut Ui| {
+                                        ui.add_sized([state_w, row_h - 4.0], |ui: &mut Ui| {
                                             ui.label(RichText::new(format!("{} {}", state_dot(p.state), state_label(p.state))).size(10.0).color(state_color(p.state)))
                                         });
-                                        ui.add_sized([cols[3], row_h - 4.0], |ui: &mut Ui| {
+                                        ui.add_sized([ram_w, row_h - 4.0], |ui: &mut Ui| {
                                             ui.label(RichText::new(fmt_ram(p.rss_kb)).size(11.0).color(Color32::from_rgb(200, 215, 240)))
                                         });
-                                        ui.add_sized([cols[4], row_h - 4.0], |ui: &mut Ui| {
+                                        ui.add_sized([vmsize_w, row_h - 4.0], |ui: &mut Ui| {
                                             ui.label(RichText::new(fmt_ram(p.vmsize_kb)).size(10.0).color(TEXT_DIM))
                                         });
-                                        ui.add_sized([cols[5], row_h - 4.0], |ui: &mut Ui| {
+                                        ui.add_sized([cpu_w, row_h - 4.0], |ui: &mut Ui| {
                                             let cc = cpu_color(cpu, self.num_cpus);
                                             let txt = if cpu >= 10.0 {
                                                 RichText::new(format!("{:.1}%", cpu)).size(11.0).color(cc).strong()
