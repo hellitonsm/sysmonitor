@@ -6,22 +6,19 @@ Monitor de sistema visual para Linux escrito em Rust com GUI (egui).
 
 ## Funcionalidades
 
-- **Visão Geral**: CPU por núcleo, gráficos em tempo real de CPU e memória, top processos por recurso
-- **Processos**: Lista completa de todos os processos do sistema com PID, usuário, nome, CPU%, memória, MEM% e status
-- **Filtro e ordenação**: Filtre por nome, ordene por qualquer coluna clicando no cabeçalho
-- **Matar processo**: Botão para encerrar processos selecionados
-- **Swap e detalhes**: Uso de swap, memória disponível, total, uptime, load average
+- **Tabela de processos**: PID, nome, estado, RAM, VM, CPU% com cores por carga
+- **Busca e ordenação**: Filtre por nome ou PID, ordene por qualquer coluna
+- **Matar processo**: Botão ✕ para encerrar via `kill`
+- **Barra de RAM**: Gráfico de uso com percentual
+- **Intervalo ajustável**: 0.5s / 1s / 2s / 5s
+- **Modo lite**: Versão mais leve via `--lite` (sem dependência de ícones, visual simplificado)
 
-## Captura de Tela
+## Modos
 
-```
-CPU ┌─────────────────────────────────────────────┐
-    │ C0 45%  C1 23%  C2 67%  C3 12%  Total: 37%│
-    └─────────────────────────────────────────────┘
-Mem ┌─────────────────────────────────────────────┐
-    │ 4.2 GB / 7.7 GB (55%)   Disp: 3.9 GB       │
-    └─────────────────────────────────────────────┘
-```
+| Modo   | Comando                    | Tema                    | Tamanho   |
+|--------|----------------------------|-------------------------|-----------|
+| Full   | `sysmonitor`               | Indigo escuro moderno   | 900×600   |
+| Lite   | `sysmonitor --lite`        | Azul clássico           | 760×480   |
 
 ## Instalação
 
@@ -30,13 +27,21 @@ Mem ┌────────────────────────�
 - Rust (edition 2021+) — [rustup.rs](https://rustup.rs)
 - Sistema Linux com X11/Wayland
 
-### Compilar e instalar
+### Compilar e instalar (modo full)
 
 ```bash
 make install
 ```
 
-Ou manualmente:
+### Compilar e instalar (modo lite)
+
+```bash
+make install-lite
+```
+
+Instala `sysmonitor` + cria o wrapper `sysmonitor-lite` que já passa `--lite`.
+
+### Manualmente
 
 ```bash
 cargo build --release
@@ -49,7 +54,9 @@ update-desktop-database ~/.local/share/applications/
 ### Executar
 
 ```bash
-sysmonitor
+sysmonitor          # modo full
+sysmonitor --lite   # modo lite
+sysmonitor-lite     # modo lite (se instalado via make install-lite)
 ```
 
 Ou pelo menu de aplicativos → SysMonitor.
@@ -66,5 +73,5 @@ Ou pelo menu de aplicativos → SysMonitor.
 ## Tecnologias
 
 - [egui](https://github.com/emilk/egui) — GUI imediata em Rust
-- [sysinfo](https://github.com/GuillaumeGomez/sysinfo) — Informações do sistema
+- Leitura direta de `/proc` — sem dependência de sysinfo
 - Rust — Linguagem de programação
