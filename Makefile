@@ -29,6 +29,14 @@ uninstall:
 	@-update-desktop-database $(PREFIX)/share/applications/ 2>/dev/null || true
 	@echo "Removido de $(PREFIX)"
 
+install-lite: build
+	@mkdir -p $(PREFIX)/bin
+	cp $(BINARY_PATH) $(PREFIX)/bin/
+	@chmod +x $(PREFIX)/bin/$(BINARY_NAME)
+	printf '#!/bin/sh\nexec %s --lite "$$@"\n' "$(PREFIX)/bin/$(BINARY_NAME)" > $(PREFIX)/bin/$(BINARY_NAME)-lite
+	chmod +x $(PREFIX)/bin/$(BINARY_NAME)-lite
+	@echo "Instalado em $(PREFIX) (modo lite disponível como $(BINARY_NAME)-lite)"
+
 install-system:
 	sudo make PREFIX=/usr/local install
 
