@@ -353,35 +353,50 @@ impl App for ProcMonitorApp {
 
 impl ProcMonitorApp {
     fn ui_header(&self, ui: &mut Ui) {
+        let kill_w = 22.0;
+        let pid_w = 58.0;
+        let state_w = 90.0;
+        let ram_w = 90.0;
+        let vmsize_w = 90.0;
+        let cpu_w = 72.0;
+
         egui::Frame::none()
             .fill(SURFACE)
             .rounding(Rounding::same(6.0))
             .inner_margin(egui::Margin::same(10.0))
             .show(ui, |ui| {
+                let name_w = ((ui.available_width() + 12.0 - kill_w - pid_w - state_w - ram_w - vmsize_w - cpu_w) / 2.0).max(60.0);
+
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("\u{2699}").size(20.0).color(ACCENT));
                     ui.add_space(4.0);
                     ui.label(RichText::new("SysMonitor").size(18.0).color(Color32::WHITE).strong());
                     ui.add_space(2.0);
                     ui.label(RichText::new("Linux").size(12.0).color(TEXT_DIM));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ram_used = self.ram_used_kb();
-                        let pct = if self.total_ram_kb > 0 {
-                            ram_used as f64 / self.total_ram_kb as f64 * 100.0
-                        } else {
-                            0.0
-                        };
-                        ui.label(
-                            RichText::new(format!("CPU Cores: {}", self.num_cpus))
-                                .size(11.0)
-                                .color(TEXT_DIM),
-                        );
-                        ui.add_space(12.0);
-                        ui.label(
-                            RichText::new(format!("{} / {} ({:.0}%)", fmt_ram(ram_used), fmt_ram(self.total_ram_kb), pct))
-                                .size(11.0)
-                                .color(Color32::from_rgb(160, 210, 255)),
-                        );
+
+                    let estado_x = kill_w + pid_w + name_w + state_w - 6.0;
+                    let min_content = 280.0;
+                    let space = (estado_x - ui.cursor().min.x).max(min_content);
+                    ui.add_sized([space, ui.available_height()], |ui: &mut Ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let ram_used = self.ram_used_kb();
+                            let pct = if self.total_ram_kb > 0 {
+                                ram_used as f64 / self.total_ram_kb as f64 * 100.0
+                            } else {
+                                0.0
+                            };
+                            ui.label(
+                                RichText::new(format!("CPU Cores: {}", self.num_cpus))
+                                    .size(11.0)
+                                    .color(TEXT_DIM),
+                            );
+                            ui.add_space(12.0);
+                            ui.label(
+                                RichText::new(format!("{} / {} ({:.0}%)", fmt_ram(ram_used), fmt_ram(self.total_ram_kb), pct))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(160, 210, 255)),
+                            );
+                        }).response
                     });
                 });
             });
@@ -631,8 +646,8 @@ fn truncate_name(name: &str, max: usize) -> String {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 640.0])
-            .with_min_inner_size([680.0, 400.0])
+            .with_inner_size([760.0, 480.0])
+            .with_min_inner_size([680.0, 360.0])
             .with_title("SysMonitor"),
         ..Default::default()
     };
